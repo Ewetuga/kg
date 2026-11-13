@@ -10,6 +10,11 @@ import { generateInvoiceRef } from '../utils/invoice'
 import { WHATSAPP_NUMBER } from '../data/products'
 import InvoicePreview from '../components/InvoicePreview'
 
+// jsPDF's built-in Helvetica has NO ₦ glyph — using ₦ in PDF corrupts the amount.
+// Format for PDF with "NGN" prefix instead.
+const pdfNaira = (value) =>
+  'NGN ' + new Intl.NumberFormat('en-NG', { maximumFractionDigits: 0 }).format(Number(value) || 0)
+
 export default function Checkout() {
   const { items, totals, deliveryFee, setDeliveryFee, clearCart, saveInvoice } = useCart()
   const navigate = useNavigate()
@@ -49,48 +54,106 @@ export default function Checkout() {
   const downloadPDF = () => {
     if (!invoice) return
     const doc = new jsPDF({ unit:'mm', format:'a4' })
+    const PAGE_W = 210
+    const MARGIN = 14
+    const RIGHT = PAGE_W - MARGIN   // 196
+
+    // ── Header banner ──────────────────────────────────────
     doc.setFillColor(14,59,46)
-    doc.rect(0,0,210,32,'F')
+    doc.rect(0, 0, PAGE_W, 32, 'F')
     doc.setTextColor(227,178,60)
     doc.setFont('helvetica','bold'); doc.setFontSize(22)
-    doc.text('KOGBAAGIDI', 14, 18)
+    doc.text('KOGBAAGIDI', MARGIN, 18)
     doc.setTextColor(247,241,227); doc.setFontSize(10)
-    doc.text('Premium Nigerian Foodstuffs', 14, 25)
+    doc.text('Premium Nigerian Foodstuffs', MARGIN, 25)
+
+    // ── Invoice meta (right side) ──────────────────────────
     doc.setTextColor(20,32,27)
     doc.setFontSize(18); doc.setFont('helvetica','bold')
-    doc.text('INVOICE', 196, 46, { align:'right' })
+    doc.text('INVOICE', RIGHT, 46, { align:'right' })
     doc.setFontSize(10); doc.setFont('helvetica','normal')
-    doc.text(`Ref: ${invoice.ref}`, 196, 52, { align:'right' })
-    doc.text(`Date: ${formatDate(invoice.date)}`, 196, 57, { align:'right' })
+    doc.text(`Ref: ${invoice.ref}`, RIGHT, 52, { align:'right' })
+    doc.text(`Date: ${formatDate(invoice.date)}`, RIGHT, 57, { align:'right' })
 
+    // ── Customer block (left) ──────────────────────────────
     doc.setFont('helvetica','bold'); doc.setFontSize(11)
-    doc.text('Billed To:', 14, 46)
+    doc.text('Billed To:', MARGIN, 46)
     doc.setFont('helvetica','normal'); doc.setFontSize(10)
-    doc.text(invoice.customer.fullName, 14, 52)
-    doc.text(invoice.customer.address, 14, 57, { maxWidth:90 })
-    doc.text(invoice.customer.phone, 14, 62)
-    if (invoice.customer.email) doc.text(invoice.customer.email, 14, 67)
+    let y = 52
+    doc.text(invoice.customer.fullName, MARGIN, y); y += 5
+    doc.text(invoice.customer.address, MARGIN, y, { maxWidth: 90 }); y += 5
+    doc.text(invoice.customer.phone, MARGIN, y); y += 5
+    if (invoice.customer.email) { doc.text(invoice.customer.email, MARGIN, y); y += 5 }
 
+    // ── Items table ────────────────────────────────────────
     autoTable(doc, {
       startY: 78,
+      margin: { left: MARGIN, right: MARGIN },
       head: [['Product','Qty','Unit Price','Subtotal']],
-      body: invoice.items.map(i => [i.name, i.qty, formatNaira(i.price), formatNaira(i.price*i.qty)]),
+      body: invoice.items.map(i => [
+        i.name,
+        i.qty,
+        pdfNaira(i.price),
+        pdfNaira(i.price * i.qty),
+      ]),
       theme: 'grid',
-      headStyles: { fillColor:[14,59,46], textColor:[247,241,227] },
-      styles: { fontSize:9 },
+      headStyles: { fillColor:[14,59,46], textColor:[247,241,227], fontStyle:'bold' },
+      styles: { fontSize: 9, cellPadding: 3 },
       columnStyles: {
-        1:{ halign:'center' }, 2:{ halign:'right' }, 3:{ halign:'right' }
-      }
+        0: { cellWidth: 92 },
+        1: { halign:'center', cellWidth: 20 },
+        2: { halign:'right', cellWidth: 34 },
+        3: { halign:'right', cellWidth: 36 },
+      },
     })
 
-    const afterY = doc.lastAutoTable.finalY + 10
+    // ── Totals block ───────────────────────────────────────
+    let afterY = doc.lastAutoTable.finalY + 8
+    const labelX = 140
+    const valueX = RIGHT
+
     doc.setFontSize(10); doc.setFont('helvetica','normal')
-    doc.text(`Subtotal: ${formatNaira(invoice.subtotal)}`, 196, afterY, { align:'right' })
-    doc.text(`Delivery: ${formatNaira(invoice.delivery)}`, 196, afterY+6, { align:'right' })
+    doc.setTextColor(92,107,99)
+    doc.text('Subtotal:', labelX, afterY)
+    doc.setTextColor(20,32,27)
+    doc.text(pdfNaira(invoice.subtotal), valueX, afterY, { align:'right' })
+    afterY += 6
+
+    doc.setTextColor(92,107,99)
+    doc.text('Delivery:', labelX, afterY)
+    doc.setTextColor(20,32,27)
+    doc.text(pdfNaira(invoice.delivery), valueX, afterY, { align:'right' })
+    afterY += 8
+
+    // Divider
+    doc.setDrawColor(14,59,46); doc.setLineWidth(0.6)
+    doc.line(labelX, afterY - 3, valueX, afterY - 3)
+
+    // Grand total — bold and larger
     doc.setFont('helvetica','bold'); doc.setFontSize(12)
-    doc.text(`Grand Total: ${formatNaira(invoice.grandTotal)}`, 196, afterY+14, { align:'right' })
-    doc.setFontSize(8); doc.setFont('helvetica','italic'); doc.setTextColor(120,128,124)
-    doc.text('Demo invoice — no payment has been processed.', 14, 285)
+    doc.setTextColor(14,59,46)
+    doc.text('Grand Total:', labelX, afterY)
+    doc.text(pdfNaira(invoice.grandTotal), valueX, afterY, { align:'right' })
+    afterY += 10
+
+    // ── Notes / thank-you ──────────────────────────────────
+    if (invoice.customer.notes) {
+      doc.setFontSize(9); doc.setFont('helvetica','normal')
+      doc.setTextColor(92,107,99)
+      doc.text('Notes:', MARGIN, afterY)
+      doc.text(invoice.customer.notes, MARGIN + 14, afterY, { maxWidth: 160 })
+      afterY += 8
+    }
+
+    // Footer — pin to bottom of the page
+    const pageH = doc.internal.pageSize.getHeight()   // 297 for A4
+    doc.setDrawColor(230,230,230); doc.setLineWidth(0.2)
+    doc.line(MARGIN, pageH - 18, RIGHT, pageH - 18)
+    doc.setFontSize(9); doc.setFont('helvetica','normal'); doc.setTextColor(92,107,99)
+    doc.text('Thank you for shopping with KOGBAAGIDI.', MARGIN, pageH - 12)
+    doc.setFontSize(8); doc.setFont('helvetica','italic'); doc.setTextColor(140,148,143)
+    doc.text('Demo invoice — no payment has been processed.', MARGIN, pageH - 7)
+
     doc.save(`${invoice.ref}.pdf`)
   }
 
